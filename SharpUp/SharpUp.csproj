@@ -49,9 +49,11 @@
     <Compile Include="Checks\DomainGPPPassword.cs" />
     <Compile Include="Checks\HijackablePaths.cs" />
     <Compile Include="Checks\McAfeeSitelistFiles.cs" />
+    <Compile Include="Checks\ModifiableScheduledTaskFile.cs" />
     <Compile Include="Checks\ModifiableServiceBinaries.cs" />
     <Compile Include="Checks\ModifiableServiceRegistryKeys.cs" />
     <Compile Include="Checks\ModifiableServices.cs" />
+    <Compile Include="Checks\ProcessDllHijack.cs" />
     <Compile Include="Checks\RegistryAutoLogons.cs" />
     <Compile Include="Checks\RegistryAutoruns.cs" />
     <Compile Include="Checks\TokenPrivileges.cs" />
